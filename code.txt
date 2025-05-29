@@ -1,0 +1,572 @@
+# Project Folder Structure
+.
+├── bot/
+│   ├── __init__.py
+│   ├── main.py             # Точка входу бота з aiogram
+│   ├── config.py           # Конфігурація (токени, БД, Redis)
+│   ├── handlers/           # Обробники команд та callback_query
+│   │   ├── __init__.py
+│   │   ├── start.py        # /start
+│   │   ├── profile.py      # /profile, статистика
+│   │   ├── rest.py         # /rest, відпочинок
+│   │   ├── hunt.py         # /hunt, швидке полювання
+│   │   └── quests.py       # квести
+│   ├── middlewares/        # Логування, локалізація, throttle
+│   │   └── __init__.py
+│   ├── services/           # Бізнес-логіка (battle_service, rest_service)
+│   │   ├── battle_service.py
+│   │   └── rest_service.py
+│   ├── utils/              # Утиліти (time parsing, helpers)
+│   └── keyboards/          # Формування inline клавіатур
+│       └── main_keyboard.py
+├── models/                 # SQLAlchemy-моделі для Alembic
+│   ├── __init__.py
+│   └── base.py             # Base та усі сутності
+├── migrations/             # Alembic
+│   ├── env.py
+│   └── versions/
+│       └── 0001_initial.py # Початкова міграція
+├── tests/                  # Unit-тести (pytest)
+│   └── test_battle.py
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
+
+# models/base.py
+from sqlalchemy import Column, Integer, String, JSON, ForeignKey, DateTime, func
+from sqlalchemy.orm import relationship, declarative_base
+
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, index=True, nullable=False)
+    username = Column(String)
+    locale = Column(String, default='uk')
+    created_at = Column(DateTime, server_default=func.now())
+    last_seen = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    characters = relationship("Character", back_populates="owner")
+
+class Character(Base):
+    __tablename__ = 'characters'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    class_name = Column(String, nullable=False)
+    level = Column(Integer, default=1)
+    stats = Column(JSON, nullable=False)
+    xp = Column(Integer, default=0)
+    last_action = Column(DateTime, server_default=func.now())
+
+    owner = relationship("User", back_populates="characters")
+    inventory_items = relationship("Inventory", back_populates="character")
+    quests = relationship("QuestProgress", back_populates="character")
+    transactions = relationship("Transaction", back_populates="character")
+
+class Inventory(Base):
+    __tablename__ = 'inventory'
+    id = Column(Integer, primary_key=True)
+    character_id = Column(Integer, ForeignKey('characters.id'), nullable=False, index=True)
+    item_id = Column(Integer, ForeignKey('items.id'), nullable=False)
+    quantity = Column(Integer, default=1)
+    metadata = Column(JSON)
+
+    character = relationship("Character", back_populates="inventory_items")
+    item = relationship("Item", back_populates="inventory_entries")
+
+class Item(Base):
+    __tablename__ = 'items'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    rarity = Column(String, nullable=False)
+    base_stats = Column(JSON)
+    craft_recipe = Column(JSON)
+
+    inventory_entries = relationship("Inventory", back_populates="item")
+
+class Skill(Base):
+    __tablename__ = 'skills'
+    id = Column(Integer, primary_key=True)
+    class_name = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    cost = Column(Integer, nullable=False)
+    cooldown = Column(Integer, nullable=False)
+    effect = Column(JSON)
+
+class Quest(Base):
+    __tablename__ = 'quests'
+    id = Column(Integer, primary_key=True)
+    type = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(String)
+    requirements = Column(JSON)
+    rewards = Column(JSON)
+
+class QuestProgress(Base):
+    __tablename__ = 'quest_progress'
+    id = Column(Integer, primary_key=True)
+    character_id = Column(Integer, ForeignKey('characters.id'), nullable=False, index=True)
+    quest_id = Column(Integer, ForeignKey('quests.id'), nullable=False)
+    progress = Column(JSON)
+    status = Column(String, default='in_progress')
+
+    character = relationship("Character", back_populates="quests")
+    quest = relationship("Quest")
+
+class Guild(Base):
+    __tablename__ = 'guilds'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    leader_id = Column(Integer, ForeignKey('users.id'))
+    members = Column(JSON)
+    fund_gold = Column(Integer, default=0)
+    fund_gems = Column(Integer, default=0)
+
+class Auction(Base):
+    __tablename__ = 'auction'
+    id = Column(Integer, primary_key=True)
+    seller_id = Column(Integer, ForeignKey('characters.id'), nullable=False)
+    item_id = Column(Integer, ForeignKey('items.id'), nullable=False)
+    price_gold = Column(Integer)
+    price_gems = Column(Integer)
+    expires_at = Column(DateTime)
+
+class Trade(Base):
+    __tablename__ = 'trades'
+    id = Column(Integer, primary_key=True)
+    from_id = Column(Integer, ForeignKey('characters.id'), nullable=False)
+    to_id = Column(Integer, ForeignKey('characters.id'), nullable=False)
+    items = Column(JSON)
+    gold = Column(Integer)
+    gems = Column(Integer)
+    status = Column(String, default='pending')
+
+class BattleSession(Base):
+    __tablename__ = 'battle_sessions'
+    id = Column(Integer, primary_key=True)
+    participants = Column(JSON)
+    state = Column(JSON)
+    created_at = Column(DateTime, server_default=func.now())
+
+class Transaction(Base):
+    __tablename__ = 'transactions'
+    id = Column(Integer, primary_key=True)
+    character_id = Column(Integer, ForeignKey('characters.id'), nullable=False)
+    type = Column(String, nullable=False)
+    amount = Column(Integer, nullable=False)
+    currency = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+    character = relationship("Character", back_populates="transactions")
+
+class Localization(Base):
+    __tablename__ = 'localization'
+    key = Column(String, primary_key=True)
+    locale = Column(String, primary_key=True)
+    text = Column(String, nullable=False)
+
+# requirements.txt
+aiogram==3.*
+SQLAlchemy>=1.4
+alembic>=1.9
+psycopg2-binary
+redis
+celery
+python-dotenv
+
+# Dockerfile (sketch)
+# FROM python:3.10-slim
+# WORKDIR /app
+# COPY requirements.txt .
+# RUN pip install -r requirements.txt
+# COPY . .
+# CMD ["python", "bot/main.py"]
+
+# docker-compose.yml (sketch)
+# version: '3.8'
+# services:
+#   bot:
+#     build: .
+#     command: python bot/main.py
+#     depends_on:
+#       - db
+#       - redis
+#   db:
+#     image: postgres:13
+#     environment:
+#       POSTGRES_DB: eldoria
+#       POSTGRES_USER: user
+#       POSTGRES_PASSWORD: pass
+#     volumes:
+#       - pgdata:/var/lib/postgresql/data
+#   redis:
+#     image: redis:6
+# volumes:
+#   pgdata:
+
+
+# bot/main.py
+import asyncio
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.redis import RedisStorage
+from bot.config import BOT_TOKEN, REDIS_HOST, REDIS_PORT
+
+# Реєстрація хендлерів
+from bot.handlers.start import register_handlers as register_start
+from bot.handlers.profile import register_handlers as register_profile
+from bot.handlers.rest import register_handlers as register_rest
+from bot.handlers.hunt import register_handlers as register_hunt
+from bot.handlers.quests import register_handlers as register_quests
+
+async def main():
+    storage = RedisStorage(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    dp = Dispatcher(storage=storage)
+    bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+
+    # Підключення хендлерів
+    register_start(dp)
+    register_profile(dp)
+    register_rest(dp)
+    register_hunt(dp)
+    register_quests(dp)
+
+    print("Bot is starting...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+# bot/keyboards/main_keyboard.py
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+def main_menu():
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🗡 Пригоди", callback_data="menu:adventures"),
+        InlineKeyboardButton("👤 Персонаж", callback_data="menu:profile"),
+    )
+    kb.add(
+        InlineKeyboardButton("🎒 Інвентар", callback_data="menu:inventory"),
+        InlineKeyboardButton("🏛 Гільдія", callback_data="menu:guild"),
+    )
+    kb.add(
+        InlineKeyboardButton("🛒 Магазин", callback_data="menu:shop"),
+        InlineKeyboardButton("⚙️ Налаштування", callback_data="menu:settings"),
+    )
+    return kb
+
+# bot/handlers/start.py
+from aiogram import Router
+from aiogram.types import Message
+from bot.keyboards.main_keyboard import main_menu
+
+router = Router()
+
+def register_handlers(dp):
+    dp.include_router(router)
+
+@router.message(commands=["start"])
+async def cmd_start(message: Message):
+    await message.answer(
+        "🏰 Легенди Ельдорії\nВітаю, Герою! Обери дію:",
+        reply_markup=main_menu()
+    )
+
+# bot/handlers/profile.py
+from aiogram import Router
+from aiogram.types import Message
+from bot.services.profile_service import get_profile_text, get_profile_keyboard
+
+router = Router()
+
+def register_handlers(dp):
+    dp.include_router(router)
+
+@router.message(commands=["profile", "stats"])
+async def cmd_profile(message: Message):
+    text = await get_profile_text(message.from_user.id)
+    kb = get_profile_keyboard()
+    await message.answer(text, reply_markup=kb)
+
+# bot/handlers/rest.py
+from aiogram import Router
+from aiogram.types import Message
+from bot.services.rest_service import rest
+
+router = Router()
+
+def register_handlers(dp):
+    dp.include_router(router)
+
+@router.message(commands=["rest"])
+async def cmd_rest(message: Message):
+    # Очікуємо формат "/rest 1h30m" або "/rest"
+    args = message.get_args()
+    response = await rest(message.from_user.id, args)
+    await message.answer(response)
+
+# bot/handlers/hunt.py
+from aiogram import Router
+from aiogram.types import Message
+from bot.services.battle_service import quick_hunt
+
+router = Router()
+
+def register_handlers(dp):
+    dp.include_router(router)
+
+@router.message(commands=["hunt", "explore"])
+async def cmd_hunt(message: Message):
+    text, kb = await quick_hunt(message.from_user.id)
+    await message.answer(text, reply_markup=kb)
+
+# bot/handlers/quests.py
+from aiogram import Router
+from aiogram.types import CallbackQuery
+from bot.services.profile_service import list_quests, accept_quest
+
+router = Router()
+
+def register_handlers(dp):
+    dp.include_router(router)
+
+@router.callback_query(lambda c: c.data and c.data.startswith('quest:'))
+async def process_quest(call: CallbackQuery):
+    action, quest_id = call.data.split(':')
+    if action == 'quest_accept':
+        response = await accept_quest(call.from_user.id, int(quest_id))
+        await call.message.answer(response)
+
+# bot/services/profile_service.py (скелет)
+async def get_profile_text(user_id: int) -> str:
+    # TODO: отримати статистику з БД
+    return "👤 Рицар Lv.2\nHP 120/120 | MP 50/50\nATK 30 | DEF 20 | SPD 15 | MAG 5 | XP 150/300"
+
+async def get_profile_keyboard():
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("🌳 Таланти", callback_data="menu:talents"),
+        InlineKeyboardButton("🔙 Назад", callback_data="menu:main")
+    )
+    return kb
+
+# bot/services/rest_service.py (скелет)
+from bot.utils.time_parser import parse_duration
+
+async def rest(user_id: int, args: str) -> str:
+    # TODO: відновлення HP/MP за формулою
+    duration = parse_duration(args) or 1  # години
+    return f"Відпочили {duration}h. HP та MP відновлено."
+
+# bot/services/battle_service.py (скелет)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+async def quick_hunt(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    # TODO: логіка бою
+    text = "🌲 Галявина Мавок (Lv.1–3)\nВи зустріли: Мавка-стрілець Lv.1"
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("Атака", callback_data="battle:attack"),
+        InlineKeyboardButton("Уміння", callback_data="battle:skill"),
+    )
+    kb.add(
+        InlineKeyboardButton("Предмет", callback_data="battle:item"),
+        InlineKeyboardButton("Захист", callback_data="battle:defend"),
+    )
+    return text, kb
+
+# bot/utils/time_parser.py
+import re
+
+def parse_duration(arg: str) -> int:
+    # Парсить '1h30m' -> 1.5 години
+    hours = re.search(r"(\d+)h", arg)
+    mins = re.search(r"(\d+)m", arg)
+    total = 0
+    if hours:
+        total += int(hours.group(1))
+    if mins:
+        total += int(mins.group(1)) / 60
+    return total
+
+# requirements.txt
+aiogram==3.*
+SQLAlchemy>=1.4
+alembic>=1.9
+psycopg2-binary
+redis
+python-dotenv
+
+# Dockerfile and docker-compose.yml remain as previously sketched.
+
+# bot/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+# Project Folder Structure
+.
+├── bot/
+│   ├── __init__.py
+│   ├── main.py             # Точка входу бота з aiogram3
+│   ├── config.py           # Конфігурація: токен, БД, Redis
+│   ├── handlers/           # Обробники команд та callback_query
+│   │   ├── __init__.py
+│   │   ├── start.py
+│   │   ├── profile.py
+│   │   ├── rest.py
+│   │   ├── hunt.py
+│   │   └── quests.py
+│   ├── services/           # Бізнес-логіка
+│   │   ├── __init__.py
+│   │   ├── battle_service.py
+│   │   ├── rest_service.py
+│   │   └── profile_service.py
+│   ├── utils/              # Утиліти
+│   │   └── time_parser.py
+│   └── keyboards/          # Inline клавіатури
+│       └── main_keyboard.py
+├── models/                 # SQLAlchemy-моделі
+│   ├── __init__.py
+│   └── base.py
+├── migrations/
+│   ├── env.py
+│   └── versions/
+│       └── 0001_initial.py
+├── tests/                  # Unit-тести
+│   ├── test_battle.py
+│   └── test_rest.py
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
+
+# bot/services/rest_service.py
+from bot.utils.time_parser import parse_duration
+
+def calculate_rest(current_hp: int, max_hp: int, current_mp: int, max_mp: int, hours: float) -> tuple[int,int]:
+    """
+    Обчислює нові значення HP та MP після відпочинку.
+    """
+    rest_hp = min(max_hp, current_hp + int(max_hp * 0.1 * hours))
+    rest_mp = min(max_mp, current_mp + int(max_mp * 0.15 * hours))
+    return rest_hp, rest_mp
+
+async def rest(user_id: int, args: str) -> str:
+    hours = parse_duration(args) or 1.0
+    # TODO: отримати з БД current_hp, max_hp, current_mp, max_mp для user_id
+    # Для демонстрації використовуємо заглушки:
+    current_hp, max_hp = 50, 100
+    current_mp, max_mp = 20, 50
+    new_hp, new_mp = calculate_rest(current_hp, max_hp, current_mp, max_mp, hours)
+    hp_diff = new_hp - current_hp
+    mp_diff = new_mp - current_mp
+    # TODO: оновити БД
+    return f"🛌 Відпочили {hours:.1f}h: HP +{hp_diff} ({current_hp}->{new_hp}), MP +{mp_diff} ({current_mp}->{new_mp})"
+
+# bot/services/battle_service.py
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+def calculate_effective_dmg(atk: int, def_: int) -> int:
+    """
+    Обчислення ефективного урону без випадковості.
+    Формула: floor(atk * 100 / (100 + def_)).
+    """
+    return (atk * 100) // (100 + def_)
+
+def calculate_final_dmg(atk: int, def_: int, variation_percent: float = 0.05, random_factor: int = 0) -> int:
+    """
+    Обчислення фінального урону з варіацією.
+    """
+    effective = calculate_effective_dmg(atk, def_)
+    return effective + random_factor
+
+def simulate_fight(player: dict, monster: dict, random_factor: int = 0) -> tuple[list[tuple[str,int]], bool]:
+    """
+    Проста симуляція бою: гравець атакує першим.
+    Повертає логи ходів та результат (True якщо гравець виграв).
+    """
+    logs = []
+    p_hp, m_hp = player['hp'], monster['hp']
+    while p_hp > 0 and m_hp > 0:
+        dmg = calculate_final_dmg(player['atk'], monster['def'], random_factor=random_factor)
+        m_hp -= dmg
+        logs.append(('player', dmg))
+        if m_hp <= 0:
+            break
+        dmg_m = calculate_final_dmg(monster['atk'], player['def'], random_factor=random_factor)
+        p_hp -= dmg_m
+        logs.append(('monster', dmg_m))
+    return logs, p_hp > 0
+
+async def quick_hunt(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    # Демонстраційні параметри
+    player = {'hp': 100, 'atk': 20, 'def': 5}
+    monster = {'hp': 30, 'atk': 10, 'def': 2}
+    logs, player_won = simulate_fight(player, monster, random_factor=0)
+    text = "🌲 Галявина Мавок (Lv.1–3)\n"
+    for actor, dmg in logs:
+        if actor == 'player':
+            text += f"🔸 Ви завдали {dmg} DMG.\n"
+        else:
+            text += f"🔹 Мавка завдала {dmg} DMG.\n"
+    if player_won:
+        xp, gold = 50, 20
+        text += f"✅ Перемога! Ви отримали {xp} XP та {gold} Gold."
+    else:
+        text += "❌ Поразка. Спробуйте знову пізніше."
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🏹 Знову полювання", callback_data="hunt:again"),
+        InlineKeyboardButton("🔙 Меню", callback_data="menu:main")
+    )
+    return text, kb
+
+# tests/test_battle.py
+import pytest
+from bot.services.battle_service import calculate_effective_dmg, calculate_final_dmg, simulate_fight
+
+
+def test_calculate_effective_dmg():
+    assert calculate_effective_dmg(120, 30) == 92  # floor(120*100/130)
+
+
+def test_calculate_final_dmg_no_variation():
+    assert calculate_final_dmg(120, 30, random_factor=0) == 92
+
+
+def test_simulate_fight_player_wins():
+    player = {'hp': 100, 'atk': 20, 'def': 5}
+    monster = {'hp': 30, 'atk': 10, 'def': 2}
+    logs, result = simulate_fight(player, monster, random_factor=0)
+    assert result is True
+    # Перевіримо, що принаймні один хід був записаний
+    assert len(logs) >= 1
+
+# tests/test_rest.py
+from bot.services.rest_service import calculate_rest
+
+
+def test_calculate_rest_full_restore():
+    # Якщо поточне HP мале, за 10 годин відпочинку має відновитись до max
+    new_hp, new_mp = calculate_rest(current_hp=10, max_hp=100, current_mp=5, max_mp=50, hours=10)
+    assert new_hp == 100
+    assert new_mp == 50
+
+
+def test_calculate_rest_partial():
+    new_hp, new_mp = calculate_rest(current_hp=40, max_hp=100, current_mp=10, max_mp=50, hours=2)
+    # HP += 100*0.1*2 = 20
+    assert new_hp == 60
+    # MP += 50*0.15*2 = 15
+    assert new_mp == 25
