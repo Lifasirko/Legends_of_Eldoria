@@ -1,32 +1,34 @@
 import asyncio
-import logging
 from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.redis import RedisStorage
-from bot.config import BOT_TOKEN, REDIS_HOST, REDIS_PORT
-from bot.handlers.start import register_handlers as register_start
-from bot.models import init_db
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
+from bot.config import BOT_TOKEN
 
-# Налаштування логування
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Реєстрація хендлерів
+from bot.handlers.start import register_handlers as register_start
+from bot.handlers.profile import register_handlers as register_profile
+from bot.handlers.rest import register_handlers as register_rest
+from bot.handlers.hunt import register_handlers as register_hunt
+from bot.handlers.quests import register_handlers as register_quests
 
 async def main():
-    # Ініціалізація бази даних
-    await init_db()
+    # Use memory storage instead of Redis
+    storage = MemoryStorage()
     
-    # Ініціалізація бота
-    storage = RedisStorage.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}")
-    bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=storage)
-    
-    # Реєстрація хендлерів
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode="HTML")
+    )
+
+    # Підключення хендлерів
     register_start(dp)
-    
-    # Запуск бота
-    logger.info("Starting bot...")
+    register_profile(dp)
+    register_rest(dp)
+    register_hunt(dp)
+    register_quests(dp)
+
+    print("Bot is starting...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

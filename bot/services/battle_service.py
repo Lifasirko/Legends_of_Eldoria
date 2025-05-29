@@ -2,13 +2,10 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import random
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
-from sqlalchemy import select
-from ..models.base import Resource, Enemy, Player, Track
 
 # Тимчасове сховище для боїв та досліджень
 ACTIVE_BATTLES: Dict[int, Dict] = {}
 EXPLORATION_RESULTS: Dict[int, Dict] = {}
-ACTIVE_TRACKS: Dict[int, Dict] = {}
 
 # Можливі ресурси та їх шанс появи
 RESOURCES = {
@@ -84,57 +81,7 @@ def simulate_fight(player: dict, monster: dict, random_factor: int = 0) -> tuple
         logs.append(('monster', dmg_m))
     return logs, p_hp > 0
 
-async def get_available_resources(session) -> List[Dict]:
-    """Отримання доступних ресурсів з бази даних"""
-    query = select(Resource)
-    result = await session.execute(query)
-    resources = result.scalars().all()
-    return [
-        {
-            "name": r.name,
-            "chance": r.spawn_chance,
-            "min": r.min_amount,
-            "max": r.max_amount,
-            "description": r.description
-        }
-        for r in resources
-    ]
-
-async def get_available_enemies(session) -> List[Dict]:
-    """Отримання доступних ворогів з бази даних"""
-    query = select(Enemy)
-    result = await session.execute(query)
-    enemies = result.scalars().all()
-    return [
-        {
-            "name": e.name,
-            "hp": e.hp,
-            "attack": e.attack,
-            "defense": e.defense,
-            "exp": e.exp,
-            "gold": e.gold,
-            "chance": e.spawn_chance,
-            "tracks": e.track_description
-        }
-        for e in enemies
-    ]
-
-async def get_player_tracks(session, user_id: int) -> List[Dict]:
-    """Отримання слідів інших гравців"""
-    query = select(Track).where(Track.player_id != user_id)
-    result = await session.execute(query)
-    tracks = result.scalars().all()
-    return [
-        {
-            "player_id": t.player_id,
-            "location": t.location,
-            "time": t.created_at,
-            "type": "player"
-        }
-        for t in tracks
-    ]
-
-async def quick_hunt(user_id: int, session) -> Tuple[str, InlineKeyboardMarkup]:
+async def quick_hunt(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
     """Дослідження території"""
     # Перевірка чи персонаж вже в бою
     if user_id in ACTIVE_BATTLES:
@@ -151,45 +98,24 @@ async def quick_hunt(user_id: int, session) -> Tuple[str, InlineKeyboardMarkup]:
         else:
             del ACTIVE_BATTLES[user_id]
     
-    # Отримання даних з бази
-    resources = await get_available_resources(session)
-    enemies = await get_available_enemies(session)
-    player_tracks = await get_player_tracks(session, user_id)
-    
     # Шанс знайти ресурси
     found_resources = []
-    for resource in resources:
-        if random.random() < resource["chance"]:
-            amount = random.randint(resource["min"], resource["max"])
-            found_resources.append(f"{amount} {resource['name']}")
+    for resource, data in RESOURCES.items():
+        if random.random() < data["chance"]:
+            amount = random.randint(data["min"], data["max"])
+            found_resources.append(f"{amount} {resource}")
     
     # Шанс знайти ворога
     enemy = None
-    for enemy_data in enemies:
+    for enemy_data in ENEMIES.values():
         if random.random() < enemy_data["chance"]:
             enemy = enemy_data
             break
     
     # Шанс знайти сліди
-    tracks = []
-    if not enemy:
-        # Сліди ворогів
-        for enemy_data in enemies:
-            if random.random() < 0.4:
-                tracks.append({
-                    "type": "enemy",
-                    "description": enemy_data["tracks"],
-                    "enemy": enemy_data
-                })
-        
-        # Сліди гравців
-        for track in player_tracks:
-            if random.random() < 0.3:
-                tracks.append({
-                    "type": "player",
-                    "description": f"Сліди гравця в локації {track['location']}",
-                    "player_id": track["player_id"]
-                })
+    tracks = None
+    if not enemy and random.random() < 0.4:
+        tracks = random.choice(list(ENEMIES.values()))["tracks"]
     
     # Формування повідомлення
     text = "🔍 Ви досліджуєте територію...\n\n"
@@ -198,10 +124,7 @@ async def quick_hunt(user_id: int, session) -> Tuple[str, InlineKeyboardMarkup]:
         text += "📦 Знайдено ресурси:\n" + "\n".join(f"• {r}" for r in found_resources) + "\n\n"
     
     if tracks:
-        text += "👣 Ви помітили сліди:\n"
-        for track in tracks:
-            text += f"• {track['description']}\n"
-        text += "\n"
+        text += f"👣 Ви помітили {tracks}\n\n"
     
     if enemy:
         text += (
@@ -235,79 +158,10 @@ async def quick_hunt(user_id: int, session) -> Tuple[str, InlineKeyboardMarkup]:
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         battle["keyboard"] = kb
         ACTIVE_BATTLES[user_id] = battle
-    elif tracks:
-        # Кнопки для слідів
-        buttons = []
-        for i, track in enumerate(tracks):
-            buttons.append([
-                InlineKeyboardButton(
-                    text=f"👣 Піти за слідами: {track['description']}",
-                    callback_data=f"tracks:follow:{i}"
-                )
-            ])
-        buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="menu:main")])
-        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        
-        # Зберігаємо інформацію про сліди
-        ACTIVE_TRACKS[user_id] = {
-            "tracks": tracks,
-            "keyboard": kb
-        }
     else:
         text += "✅ Ви безпечно дослідили територію"
         buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="menu:main")]]
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
-    return text, kb
-
-async def follow_tracks(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
-    """Слідування за слідами"""
-    if user_id not in ACTIVE_TRACKS:
-        return "❌ Ви не знайшли слідів!", main_menu()
-    
-    tracks_data = ACTIVE_TRACKS[user_id]
-    track = tracks_data["tracks"][0]  # Беремо перший слід
-    
-    if track["type"] == "enemy":
-        # Зустріч з ворогом
-        enemy = track["enemy"]
-        text = (
-            f"⚠️ Ви знайшли {enemy['name']}!\n\n"
-            f"❤️ Ваше здоров'я: 100\n"  # TODO: Отримати з БД
-            f"❤️ Здоров'я ворога: {enemy['hp']}\n"
-            f"⚔️ Атака ворога: {enemy['attack']}\n"
-            f"🛡 Захист ворога: {enemy['defense']}\n\n"
-            "Оберіть дію:"
-        )
-        
-        battle = {
-            "enemy": enemy,
-            "player_hp": 100,  # TODO: Отримати з БД
-            "enemy_hp": enemy["hp"],
-            "end_time": datetime.now() + timedelta(minutes=5),
-            "keyboard": None
-        }
-        
-        buttons = [
-            [
-                InlineKeyboardButton(text="⚔️ Атакувати", callback_data="hunt:attack"),
-                InlineKeyboardButton(text="🛡 Захищатися", callback_data="hunt:defend")
-            ],
-            [
-                InlineKeyboardButton(text="🏃 Втекти", callback_data="hunt:flee"),
-                InlineKeyboardButton(text="🔙 Назад", callback_data="menu:main")
-            ]
-        ]
-        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        battle["keyboard"] = kb
-        ACTIVE_BATTLES[user_id] = battle
-        del ACTIVE_TRACKS[user_id]
-    else:
-        # Зустріч з гравцем
-        text = f"👤 Ви знайшли гравця! Він знаходиться в локації {track['location']}"
-        buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="menu:main")]]
-        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        del ACTIVE_TRACKS[user_id]
     
     return text, kb
 
